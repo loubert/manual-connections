@@ -20,7 +20,17 @@
 # SOFTWARE.
 
 # --- script variables
+
+curl_creds_dir=''
+
 # --- script functions
+
+# Trap function to cleanup on exit
+cleanup() {
+    if [[ -n "$curl_creds_dir" ]]; then
+        rm -rf "$curl_creds_dir"
+    fi
+}
 
 # This function allows you to check if the required tools have been installed.
 check_tool() {
@@ -130,5 +140,6 @@ main() {
     generate_dip_response
 }
 
+trap cleanup EXIT
 main
 

@@ -116,5 +116,6 @@ main() {
     generate_token
 }
 
+trap cleanup EXIT
 main
 
