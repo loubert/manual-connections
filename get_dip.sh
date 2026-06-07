@@ -19,91 +19,116 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+# --- script variables
+# --- script functions
+
 # This function allows you to check if the required tools have been installed.
 check_tool() {
-  cmd=$1
-  if ! command -v $cmd &>/dev/null; then
+  cmd="$1"
+  if ! command -v "$cmd" &>/dev/null; then
     echo "$cmd could not be found"
     echo "Please install $cmd"
     exit 1
   fi
 }
 
-# Now we call the function to make sure we can use curl and jq.
-check_tool curl
-check_tool jq
+make_curl_creds() {
+    local token_file='/etc/piavpn-manual/token'
+    local pia_token=''
+    read -r pia_token < "$token_file"
+    if [[ $? -ne 0 || -z "$pia_token" ]]; then
+        cat >&2 << EOF
+If you want this script to automatically retrieve dedicated IP location details
+from the Meta service, first generate a token with get_token.sh
+Example:$ sudo ./get_token.sh
+EOF
+        exit 1
+    fi
 
-# Check if terminal allows output, if yes, define colors for output
-if [[ -t 1 ]]; then
-  ncolors=$(tput colors)
-  if [[ -n $ncolors && $ncolors -ge 8 ]]; then
-    red=$(tput setaf 1) # ANSI red
-    green=$(tput setaf 2) # ANSI green
-    nc=$(tput sgr0) # No Color
-  else
-    red=''
-    green=''
-    nc='' # No Color
-  fi
-fi
+    local dip_token_file='/etc/piavpn-manual/dip_token'
+    local dip_token=''
+    read -r dip_token < "$dip_token_file"
+    if [[ $? -ne 0 || -z "$dip_token" ]]; then
+        cat >&2 << EOF
+If you want this script to automatically retrieve dedicated IP location details
+from the Meta service, save your DIP token to the file '$dip_token_file'
+Example:$ cat $dip_token_file
+DIP1a2b3c4d5e6f7g8h9i10j11k12l13
+EOF
+        exit 1
+    fi
 
-# Only allow script to run as root
-if (( EUID != 0 )); then
-  echo -e "${red}This script needs to be run as root. Try again with 'sudo $0'${nc}"
-  exit 1
-fi
+    curl_creds_dir="$(mktemp -d /etc/piavpn-manual/.curl-XXXXXX)"
+    chmod 700 "$curl_creds_dir"
+    curl_creds="$curl_creds_dir/creds"
+    touch "$curl_creds"
+    chmod 600 "$curl_creds"
 
-mkdir -p /opt/piavpn-manual
+    cat > "$curl_creds" << EOF
+header = "Authorization: Token $pia_token"
+data-raw = "{ \"tokens\":[\"$dip_token\"] }"
+EOF
+}
 
-if [[ -z $PIA_TOKEN ]]; then
-  echo "If you want this script to automatically retrieve dedicated IP location details"
-  echo "from the Meta service, please add the variables PIA_TOKEN and DIP_TOKEN. Example:"
-  echo "$ PIA_TOKEN DIP_TOKEN=DIP1a2b3c4d5e6f7g8h9i10j11k12l13 ./get_token.sh"
-  exit 1
-fi
+generate_dip_response() {
+    local curl_creds=''
+    make_curl_creds
 
-dipSavedLocation=/opt/piavpn-manual/dipAddress
+    local dip_response="$(curl -s --location --request POST \
+        'https://www.privateinternetaccess.com/api/client/v2/dedicated_ip' \
+        --header 'Content-Type: application/json' \
+        --config "$curl_creds")"
 
-echo -n "Checking DIP token..."
+    local dip_status='null'
+    local dip_address='null'
+    local dip_hostname='null'
+    local dip_expiration='null'
+    local dip_id='null'
+    {
+        read -r dip_status
+        read -r dip_address
+        read -r dip_hostname
+        read -r dip_expiration
+        read -r dip_id
+    } < <(jq -r '.[0] | .status, .ip, .cn, .dip_expire, .id' <<< "$dip_response")
 
-generateDIPResponse=$(curl -s --location --request POST \
-  'https://www.privateinternetaccess.com/api/client/v2/dedicated_ip' \
-  --header 'Content-Type: application/json' \
-  --header "Authorization: Token $PIA_TOKEN" \
-  --data-raw '{
-    "tokens":["'"$DIP_TOKEN"'"]
-  }')
+    if [[ "$dip_status" != "active" ]]; then
+        echo "Could not validate the dedicated IP token provided!" >&2
+        exit 1
+    fi
+    local key_hostname="dedicated_ip_$dip_token"
+    dip_expiration="$(date -d "@$dip_expiration")"
 
-if [ "$(echo "$generateDIPResponse" | jq -r '.[0].status')" != "active" ]; then
-  echo
-  echo
-  echo -e "${red}Could not validate the dedicated IP token provided!${nc}"
-  echo
-  exit
-fi
-  
-echo -e ${green}OK!${nc}
-echo
-dipAddress=$(echo "$generateDIPResponse" | jq -r '.[0].ip')
-dipHostname=$(echo "$generateDIPResponse" | jq -r '.[0].cn')
-keyHostname=$(echo "dedicated_ip_$DIP_TOKEN")
-dipExpiration=$(echo "$generateDIPResponse" | jq -r '.[0].dip_expire')
-dipExpiration=$(date -d @$dipExpiration)
-dipID=$(echo "$generateDIPResponse" | jq -r '.[0].id')
-echo -e The hostname of your dedicated IP is ${green}$dipHostname${nc}
-echo
-echo -e The dedicated IP address is ${green}$dipAddress${nc}
-echo 
-echo This dedicated IP is valid until $dipExpiration.
-echo
-pfCapable="true"
-if [[ $dipID == us_* ]]; then
-  pfCapable="false"
-  echo This location does not have port forwarding capability.
-  echo
-fi
-echo $dipAddress > /opt/piavpn-manual/dipAddress || exit 1
-echo $dipHostname >> /opt/piavpn-manual/dipAddress
-echo $keyHostname >> /opt/piavpn-manual/dipAddress
-echo $dipExpiration >> /opt/piavpn-manual/dipAddress
-echo $pfCapable >> /opt/piavpn-manual/dipAddress
+    local pf_capable='true'
+    if [[ "$dip_id" == us_* ]]; then
+        pf_capable='false'
+    fi
+
+    local dip_address_file='/etc/piavpn-manual/dip_address'
+    touch "$dip_address_file"
+    chmod 600 "$dip_address_file"
+    cat > "$dip_address_file" << EOF
+$dip_address
+$dip_hostname
+$key_hostname
+$dip_expiration
+$pf_capable
+EOF
+}
+
+main() {
+    # Now we call the function to make sure we can use curl and jq.
+    check_tool curl
+    check_tool jq
+
+    # Only allow script to run as root
+    if (( EUID != 0 )); then
+        echo -e "This script needs to be run as root. Try again with 'sudo $0'"
+        exit 1
+    fi
+
+    generate_dip_response
+}
+
+main
+

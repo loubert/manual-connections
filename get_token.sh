@@ -20,9 +20,11 @@
 # SOFTWARE.
 
 # --- script variables
+
 curl_creds_dir=''
 
 # --- script functions
+
 # Trap function to cleanup on exit
 cleanup() {
     if [[ -n "$curl_creds_dir" ]]; then
@@ -54,10 +56,13 @@ make_curl_creds() {
     } < "$creds_file"
 
     if [[ $? != 0 || -z "$pia_user" || -z "$pia_pass" ]]; then
-        echo "If you want this script to automatically get a token from the" >2
-        echo "Meta service, please add your PIA username and password to" >2
-        echo -e "the file '$creds_file'" >2
-        echo -e "Example:$ cat $creds_file\np0123456\nxxx" >2
+        cat >&2 << EOF
+If you want this script to automatically get a token from the Meta service,
+please add your PIA username and password to the file '$creds_file'
+Example:$ cat $creds_file
+p0123456
+xxx
+EOF
         exit 1
     fi
 
@@ -73,7 +78,7 @@ form = "password=$pia_pass"
 EOF
 }
 
-request_token() {
+generate_token() {
     local curl_creds=''
     make_curl_creds
 
@@ -83,12 +88,15 @@ request_token() {
 
     local token="$(jq -r '.token' <<< "$token_response")"
     if [[ "$token" == "" ]]; then
-        echo "Could not authenticate with the login credentials provided!" >2
+        echo "Could not authenticate with the login credentials provided!" >&2
         exit 1
     fi
 
+    local token_file='/etc/piavpn-manual/token'
+    touch "$token_file"
+    chmod 600 "$token_file"
     token_expiration="$(timeout_timestamp)"
-    cat > /etc/piavpn-manual/token << EOF
+    cat > "$token_file" << EOF
 $token
 $token_expiration
 EOF
@@ -101,11 +109,11 @@ main() {
 
     # Only allow script to run as root
     if (( EUID != 0 )); then
-        echo -e "This script must be run as root. Try again with 'sudo $0'" >2
+        echo -e "This script must be run as root. Try again with 'sudo $0'" >&2
         exit 1
     fi
 
-    request_token
+    generate_token
 }
 
 main
