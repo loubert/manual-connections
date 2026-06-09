@@ -23,6 +23,7 @@
 serverlist_url='https://serverlist.piaservers.net/vpninfo/servers/v6'
 latency_file='/etc/piavpn-manual/latency_list'
 tmp_latency_dir=''
+max_parallel=10
 
 # configurable inputs
 preferred_region='none'
@@ -50,11 +51,11 @@ check_tool() {
 # This function checks the latency you have to a specific server.
 probe_server_latency() {
     local server_ip="$1"
-    local latency=$(LC_NUMERIC=en_US.utf8 curl -o /dev/null -s \
+    local latency="$(LC_NUMERIC=en_US.utf8 curl -o /dev/null -s \
         --connect-timeout "$max_timeout" \
         --write-out "%{time_connect}" \
-        "http://$server_ip:443")
-    if [[ "$latency" == '0.000000' ]]; then
+        "http://$server_ip:443")"
+    if [[ "$latency" =~ ^0*\.?0*$ ]]; then
         echo '999'
     else
         echo "$latency"
@@ -117,21 +118,24 @@ main() {
 
     # Filter based on region
     if [[ "$preferred_region" != 'none' ]]; then
-        region_data="$(jq --arg REGION_ID "$preferred_region" -cr
-                     '{"regions":[.regions[] | select(.id==$REGION_ID)]}'
-                      <<< $region_data)"
+        region_data="$(jq -cr --arg REGION_ID "$preferred_region" \
+                       '{"regions":[.regions[] | select(.id==$REGION_ID)]}' \
+                       <<< "$region_data")"
     fi
 
     # Filter based on port-forwarding
     if [[ "$require_pf" == 'true' ]]; then
         region_data=$(jq -cr '{"regions":[.regions[]
-                               | select(.port_forward==true)]}'
-                               <<< $region_data)
+                               | select(.port_forward==true)]}' \
+                               <<< "$region_data")
     fi
 
     local num_regions="$(jq -cr '.regions | length' <<< $region_data)"
     if (( num_regions == 0 )); then
-        echo "No regions available. Probably something." >&2
+        cat >&2 << EOF
+No regions available. Double check spelling of any specified region.
+If port-forwarding required, make sure any specified region is not in the US.
+EOF
         exit 1
     fi
 
@@ -140,10 +144,15 @@ main() {
     tmp_latency_dir="$(mktemp -d /etc/piavpn-manual/.latency-XXXXXX)"
     chmod 700 "$tmp_latency_dir"
 
+    local meta_ip='' region_id=''
     while { read -r meta_ip; read -r region_id; }; do
         echo "$(probe_server_latency "$meta_ip") $meta_ip $region_id" \
-            > "$tmp_latency_dir/$meta_ip" &
-    done < <(jq -r '.regions[] | (.servers.meta[0].ip, .id)' <<< "$region_data")
+             > "$tmp_latency_dir/$meta_ip" &
+        while (( $(jobs -rp | wc -l) >= max_parallel )); do
+            wait -n
+        done
+    done < <(jq -r '.regions[] | (.servers.meta[0].ip, .id)' \
+             <<< "$region_data")
 
     wait
 
