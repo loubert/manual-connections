@@ -86,6 +86,8 @@ generate_token() {
         --config "$curl_creds" \
         'https://www.privateinternetaccess.com/api/client/v2/token')"
 
+    echo $token_response
+
     local token="$(jq -r '.token' <<< "$token_response")"
     if [[ "$token" == "" ]]; then
         echo "Could not authenticate with the login credentials provided!" >&2
