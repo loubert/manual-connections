@@ -27,8 +27,9 @@ max_parallel=10
 
 # configurable inputs
 preferred_region='none'
-require_pf='false'
 max_timeout=0.5
+protocol='wg'
+require_pf='false'
 verbose='false'
 
 # Trap function to cleanup on exit
@@ -70,21 +71,23 @@ Find the best region server to connect to.
 Usage: $prog [options]
 
 Options:
-  -r <region>   Preferred region to use (default: $preferred_region)
-  -p            Filter out non-port-forwarding servers (default: $require_pf)
-  -t <timeout>  Maximum timeout to allow, in seconds (default: $max_timeout)
-  -v            Verbose printouts
-  -h            Print this message and exit
+  -r <region>    Preferred region to use (default: $preferred_region)
+  -t <timeout>   Maximum timeout to allow, in seconds (default: $max_timeout)
+  -p <protocol>  VPN Protocol to use: meta, wg, ovpntcp, ovpnudp (default: $protocol)
+  -f             Filter out non-port-forwarding servers (default: $require_pf)
+  -v             Verbose printouts
+  -h             Print this message and exit
 EOF
 }
 
 parse_args() {
     local OPTARG OPTIND opt
-    while getopts 'r:pl:vh' opt; do
+    while getopts 'r:l:p:fvh' opt; do
         case "$opt" in
             r) preferred_region="$OPTARG";;
-            p) require_pf='true';;
             l) max_timeout="$OPTARG";;
+            p) protocol="$OPTARG";;
+            f) require_pf='true';;
             v) verbose='true';;
             h) usage
                exit;;
@@ -92,6 +95,11 @@ parse_args() {
                exit 1;;
         esac
     done
+
+    if [[ "$protocol" != @('meta'|'wg'|'ovpntcp'|'ovpnudp') ]]; then
+        echo "Invalid protocol. Must be one one meta, wg, ovpntcp, ovpnudp" >&2
+        exit 1
+    fi
 }
 
 main() {
@@ -144,15 +152,15 @@ EOF
     tmp_latency_dir="$(mktemp -d /etc/piavpn-manual/.latency-XXXXXX)"
     chmod 700 "$tmp_latency_dir"
 
-    local meta_ip='' region_id=''
-    while { read -r meta_ip; read -r region_id; }; do
-        echo "$(probe_server_latency "$meta_ip") $meta_ip $region_id" \
-             > "$tmp_latency_dir/$meta_ip" &
+    local server_ip='' region_id=''
+    while { read -r server_ip; read -r region_id; }; do
+        echo "$(probe_server_latency "$server_ip") $server_ip $region_id" \
+             > "$tmp_latency_dir/$server_ip" &
         while (( $(jobs -rp | wc -l) >= max_parallel )); do
             wait -n
         done
-    done < <(jq -r '.regions[] | (.servers.meta[0].ip, .id)' \
-             <<< "$region_data")
+    done < <(jq -r --arg PROTO "$protocol" \
+             '.regions[] | (.servers[$PROTO][0].ip, .id)' <<< "$region_data")
 
     wait
 
