@@ -20,15 +20,15 @@
 # SOFTWARE.
 
 # script globals
-serverlist_url='https://serverlist.piaservers.net/vpninfo/servers/v6'
-latency_file='/etc/piavpn-manual/latency_list'
 tmp_latency_dir=''
 max_parallel=10
+serverlist_url='https://serverlist.piaservers.net/vpninfo/servers/v6'
+latency_file='/etc/piavpn-manual/latency_list'
+region_file='/etc/piavpn-manual/region'
 
 # configurable inputs
 preferred_region='none'
 max_timeout=0.5
-protocol='wg'
 require_pf='false'
 verbose='false'
 
@@ -73,8 +73,7 @@ Usage: $prog [options]
 Options:
   -r <region>    Preferred region to use (default: $preferred_region)
   -t <timeout>   Maximum timeout to allow, in seconds (default: $max_timeout)
-  -p <protocol>  VPN Protocol to use: meta, wg, ovpntcp, ovpnudp (default: $protocol)
-  -f             Filter out non-port-forwarding servers (default: $require_pf)
+  -f             Filter out non-port-forwarding servers
   -v             Verbose printouts
   -h             Print this message and exit
 EOF
@@ -82,11 +81,10 @@ EOF
 
 parse_args() {
     local OPTARG OPTIND opt
-    while getopts 'r:l:p:fvh' opt; do
+    while getopts 'r:l:fvh' opt; do
         case "$opt" in
             r) preferred_region="$OPTARG";;
             l) max_timeout="$OPTARG";;
-            p) protocol="$OPTARG";;
             f) require_pf='true';;
             v) verbose='true';;
             h) usage
@@ -95,11 +93,6 @@ parse_args() {
                exit 1;;
         esac
     done
-
-    if [[ "$protocol" != @('meta'|'wg'|'ovpntcp'|'ovpnudp') ]]; then
-        echo "Invalid protocol. Must be one one meta, wg, ovpntcp, ovpnudp" >&2
-        exit 1
-    fi
 }
 
 main() {
@@ -152,19 +145,40 @@ EOF
     tmp_latency_dir="$(mktemp -d /etc/piavpn-manual/.latency-XXXXXX)"
     chmod 700 "$tmp_latency_dir"
 
-    local server_ip='' region_id=''
-    while { read -r server_ip; read -r region_id; }; do
-        echo "$(probe_server_latency "$server_ip") $server_ip $region_id" \
-             > "$tmp_latency_dir/$server_ip" &
+    local meta_ip='' meta_cn='' wg_ip='' wg_cn=''
+    local ovpntcp_ip='' ovpntcp_cn='' ovpnudp_ip='' ovpnudp_cn=''
+    while { read -r meta_ip;    read -r meta_cn
+            read -r wg_ip;      read -r wg_cn
+            read -r ovpntcp_ip; read -r ovpntcp_cn
+            read -r ovpnudp_ip; read -r ovpnudp_cn; }; do
+        echo "$(probe_server_latency "$meta_ip")" \
+             "$meta_ip"    "$meta_cn" \
+             "$wg_ip"      "$wg_cn" \
+             "$ovpntcp_ip" "$ovpntcp_cn" \
+             "$ovpnudp_ip" "$ovpnudp_cn" > "$tmp_latency_dir/$meta_ip" &
         while (( $(jobs -rp | wc -l) >= max_parallel )); do
             wait -n
         done
-    done < <(jq -r --arg PROTO "$protocol" \
-             '.regions[] | (.servers[$PROTO][0].ip, .id)' <<< "$region_data")
+    done < <(jq -r '.regions[].servers
+                    | (.meta[0], .wg[0], .ovpntcp[0], .ovpnudp[0])
+                    | (.ip, .cn)' <<< "$region_data")
 
     wait
-
     cat "$tmp_latency_dir"/* | sort -n > "$latency_file"
+
+    # For now, just use the lowest-latency as the selected region
+    local latency=''
+    read -r latency meta_ip meta_cn wg_ip wg_cn ovpntcp_ip ovpntcp_cn \
+            ovpnudp_ip ovpnudp_cn < "$latency_file"
+
+    install -m 600 -o root -g root /dev/null "$region_file"
+    cat > "$region_file" << EOF
+$meta_ip $meta_cn
+$wg_ip $wg_cn
+$ovpntcp_ip $ovpntcp_cn
+$ovpnudp_ip $ovpnudp_cn
+EOF
+    # TODO Make an interactive version like pia-foss has
 }
 
 trap cleanup EXIT

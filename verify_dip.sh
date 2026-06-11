@@ -22,28 +22,30 @@
 # --- script variables
 
 curl_creds_dir=''
+token_file='/etc/piavpn-manual/token'
+dip_token_file='/etc/piavpn-manual/dip_token'
+dip_address_file='/etc/piavpn-manual/dip_address'
 
 # --- script functions
 
 # Trap function to cleanup on exit
 cleanup() {
-    if [[ -n "$curl_creds_dir" ]]; then
+    if [[ -d "$curl_creds_dir" ]]; then
         rm -rf "$curl_creds_dir"
     fi
 }
 
 # This function allows you to check if the required tools have been installed.
 check_tool() {
-  cmd="$1"
-  if ! command -v "$cmd" &>/dev/null; then
-    echo "$cmd could not be found"
-    echo "Please install $cmd"
-    exit 1
-  fi
+    cmd="$1"
+    if ! command -v "$cmd" &>/dev/null; then
+        echo "$cmd could not be found"
+        echo "Please install $cmd"
+        exit 1
+    fi
 }
 
 make_curl_creds() {
-    local token_file='/etc/piavpn-manual/token'
     local pia_token=''
     read -r pia_token < "$token_file"
     if [[ $? -ne 0 || -z "$pia_token" ]]; then
@@ -55,7 +57,6 @@ EOF
         exit 1
     fi
 
-    local dip_token_file='/etc/piavpn-manual/dip_token'
     local dip_token=''
     read -r dip_token < "$dip_token_file"
     if [[ $? -ne 0 || -z "$dip_token" ]]; then
@@ -71,8 +72,7 @@ EOF
     curl_creds_dir="$(mktemp -d /etc/piavpn-manual/.curl-XXXXXX)"
     chmod 700 "$curl_creds_dir"
     curl_creds="$curl_creds_dir/creds"
-    touch "$curl_creds"
-    chmod 600 "$curl_creds"
+    install -m 600 -o root -g root /dev/null "$curl_creds"
 
     cat > "$curl_creds" << EOF
 header = "Authorization: Token $pia_token"
@@ -106,6 +106,7 @@ generate_dip_response() {
         echo "Could not validate the dedicated IP token provided!" >&2
         exit 1
     fi
+
     local key_hostname="dedicated_ip_$dip_token"
     dip_expiration="$(date -d "@$dip_expiration")"
 
@@ -114,9 +115,7 @@ generate_dip_response() {
         pf_capable='false'
     fi
 
-    local dip_address_file='/etc/piavpn-manual/dip_address'
-    touch "$dip_address_file"
-    chmod 600 "$dip_address_file"
+    install -m 600 -o root -g root /dev/null "$dip_address_file"
     cat > "$dip_address_file" << EOF
 $dip_address
 $dip_hostname

@@ -42,11 +42,6 @@ check_tool() {
     fi
 }
 
-# This function creates a timestamp, to use for setting $TOKEN_EXPIRATION
-timeout_timestamp() {
-    date +"%c" --date='1 day' # Timestamp 24 hours
-}
-
 make_curl_creds() {
     local creds_file='/etc/piavpn-manual/pia_creds'
     local pia_user='', pia_pass=''
@@ -61,7 +56,7 @@ If you want this script to automatically get a token from the Meta service,
 please add your PIA username and password to the file '$creds_file'
 Example:$ cat $creds_file
 p0123456
-xxx
+xxxxxxxx
 EOF
         exit 1
     fi
@@ -86,10 +81,8 @@ generate_token() {
         --config "$curl_creds" \
         'https://www.privateinternetaccess.com/api/client/v2/token')"
 
-    echo $token_response
-
     local token="$(jq -r '.token' <<< "$token_response")"
-    if [[ "$token" == "" ]]; then
+    if [[ "$token" == @(''|'null') ]]; then
         echo "Could not authenticate with the login credentials provided!" >&2
         exit 1
     fi
@@ -97,7 +90,8 @@ generate_token() {
     local token_file='/etc/piavpn-manual/token'
     touch "$token_file"
     chmod 600 "$token_file"
-    token_expiration="$(timeout_timestamp)"
+    local token_expiration="$(date +"%c" --date='1 day')" # Timestamp 24 hours
+
     cat > "$token_file" << EOF
 $token
 $token_expiration
