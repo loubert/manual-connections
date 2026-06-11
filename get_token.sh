@@ -19,77 +19,99 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+# --- script variables
+
+curl_creds_dir=''
+
+# --- script functions
+
+# Trap function to cleanup on exit
+cleanup() {
+    if [[ -n "$curl_creds_dir" ]]; then
+        rm -rf "$curl_creds_dir"
+    fi
+}
+
 # This function allows you to check if the required tools have been installed.
 check_tool() {
-  cmd=$1
-  if ! command -v "$cmd" >/dev/null; then
-    echo "$cmd could not be found"
-    echo "Please install $cmd"
-    exit 1
-  fi
+    local cmd="$1"
+    if ! command -v "$cmd" >/dev/null; then
+        echo "$cmd could not be found"
+        echo "Please install $cmd"
+        exit 1
+    fi
 }
 
-# Now we call the function to make sure we can use curl and jq.
-check_tool curl
-check_tool jq
+make_curl_creds() {
+    local creds_file='/etc/piavpn-manual/pia_creds'
+    local pia_user='', pia_pass=''
+    {
+        read -r pia_user
+        read -r pia_pass
+    } < "$creds_file"
 
-# This function creates a timestamp, to use for setting $TOKEN_EXPIRATION
-timeout_timestamp() {
-  date +"%c" --date='1 day' # Timestamp 24 hours
+    if [[ $? != 0 || -z "$pia_user" || -z "$pia_pass" ]]; then
+        cat >&2 << EOF
+If you want this script to automatically get a token from the Meta service,
+please add your PIA username and password to the file '$creds_file'
+Example:$ cat $creds_file
+p0123456
+xxxxxxxx
+EOF
+        exit 1
+    fi
+
+    curl_creds_dir="$(mktemp -d /etc/piavpn-manual/.curl-XXXXXX)"
+    chmod 700 "$curl_creds_dir"
+    curl_creds="$curl_creds_dir/creds"
+    touch "$curl_creds"
+    chmod 600 "$curl_creds"
+
+    cat > "$curl_creds" << EOF
+form = "username=$pia_user"
+form = "password=$pia_pass"
+EOF
 }
 
-# Check if terminal allows output, if yes, define colors for output
-if [[ -t 1 ]]; then
-  ncolors=$(tput colors)
-  if [[ -n $ncolors && $ncolors -ge 8 ]]; then
-    red=$(tput setaf 1) # ANSI red
-    green=$(tput setaf 2) # ANSI green
-    nc=$(tput sgr0) # No Color
-  else
-    red=''
-    green=''
-    nc='' # No Color
-  fi
-fi
+generate_token() {
+    local curl_creds=''
+    make_curl_creds
 
-# Only allow script to run as root
-if (( EUID != 0 )); then
-  echo -e "${red}This script needs to be run as root. Try again with 'sudo $0'${nc}"
-  exit 1
-fi
+    local token_response="$(curl -s --location --request POST \
+        --config "$curl_creds" \
+        'https://www.privateinternetaccess.com/api/client/v2/token')"
 
-mkdir -p /opt/piavpn-manual
+    local token="$(jq -r '.token' <<< "$token_response")"
+    if [[ "$token" == @(''|'null') ]]; then
+        echo "Could not authenticate with the login credentials provided!" >&2
+        exit 1
+    fi
 
-if [[ -z $PIA_USER || -z $PIA_PASS ]]; then
-  echo "If you want this script to automatically get a token from the Meta"
-  echo "service, please add the variables PIA_USER and PIA_PASS. Example:"
-  echo "$ PIA_USER=p0123456 PIA_PASS=xxx ./get_token.sh"
-  exit 1
-fi
+    local token_file='/etc/piavpn-manual/token'
+    touch "$token_file"
+    chmod 600 "$token_file"
+    local token_expiration="$(date +"%c" --date='1 day')" # Timestamp 24 hours
 
-echo -n "Checking login credentials..."
+    cat > "$token_file" << EOF
+$token
+$token_expiration
+EOF
+}
 
-generateTokenResponse=$(curl -s --location --request POST \
-  'https://www.privateinternetaccess.com/api/client/v2/token' \
-  --form "username=$PIA_USER" \
-  --form "password=$PIA_PASS" )
+main() {
+    # Check for the required tools curl and jq
+    check_tool curl
+    check_tool jq
 
-if [ "$(echo "$generateTokenResponse" | jq -r '.token')" == "" ]; then
-  echo
-  echo
-  echo -e "${red}Could not authenticate with the login credentials provided!${nc}"
-  echo
-  exit
-fi
+    # Only allow script to run as root
+    if (( EUID != 0 )); then
+        echo -e "This script must be run as root. Try again with 'sudo $0'" >&2
+        exit 1
+    fi
 
-echo -e "${green}OK!"
-echo
-token=$(echo "$generateTokenResponse" | jq -r '.token')
-tokenExpiration=$(timeout_timestamp)
-tokenLocation=/opt/piavpn-manual/token
-echo -e "PIA_TOKEN=$token${nc}"
-echo "$token" > "$tokenLocation" || exit 1
-echo "$tokenExpiration" >> "$tokenLocation"
-echo
-echo "This token will expire in 24 hours, on $tokenExpiration."
-echo
+    generate_token
+}
+
+trap cleanup EXIT
+main
+
